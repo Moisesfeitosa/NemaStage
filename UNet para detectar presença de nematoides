@@ -1,0 +1,182 @@
+#importando os pacotes necessários
+
+import tensorflow as tf
+from tensorflow.keras.layers import Conv2D, Dropout, MaxPooling2D, Lambda, Input, Flatten, Dense, BatchNormalization
+from tensorflow.keras.layers import Conv2DTranspose, concatenate
+from tensorflow.keras import Model
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, TensorBoard, ReduceLROnPlateau
+import os
+import random
+import numpy as np
+from skimage import transform
+from tqdm import tqdm 
+from skimage.io import imread, imshow, imsave
+from skimage.transform import resize
+import matplotlib.pyplot as plt
+
+
+# carregando os dados e gerando a aumentação dos dados
+data_gen_args =  dict(rescale = 1./255,
+                      rotation_range=90,
+                      shear_range = 0.2,
+                      horizontal_flip = True,
+                      vertical_flip = True,
+                      width_shift_range = [-20,20],
+                      height_shift_range = [-20, 20],
+                      brightness_range=[0.5,1.0],
+                      zoom_range=[0.8,1.0])
+
+mask_data_gen_args =  dict(rescale = 1./255,
+                      rotation_range=90,
+                      shear_range = 0.2,
+                      horizontal_flip = True,
+                      vertical_flip = True,
+                      width_shift_range = [-20,20],
+                      height_shift_range = [-20, 20],
+                      brightness_range=[0.5,1.0],
+                      zoom_range=[0.8,1.0],
+                      preprocessing_function = lambda x: np.where(x>0, 1, 0).astype(x.dtype))
+
+train_datagen = ImageDataGenerator(**data_gen_args)
+# valid_datagen = ImageDataGenerator(rescale=1./255)
+valid_datagen = ImageDataGenerator(mask_data_gen_args, rescale=1./255)
+seed = 3062020
+batch_size = 10
+target_size = (480, 480)
+training_path = "/content/drive/MyDrive/nema_colored/training/"
+valid_path = "/content/drive/MyDrive/nema_colored/validation/"
+train_image_generator = train_datagen.flow_from_directory(
+    training_path + "images",
+    class_mode=None,
+    color_mode='rgb',
+    target_size = target_size,
+    batch_size = batch_size,
+    seed = seed)
+
+train_mask_generator = train_datagen.flow_from_directory(
+    training_path + "masks",
+    class_mode=None,
+    color_mode='grayscale',
+    target_size = target_size,
+    batch_size = batch_size,
+    seed = seed)
+
+valid_image_generator = valid_datagen.flow_from_directory(
+    valid_path + "images",
+    class_mode=None,
+    color_mode='rgb',
+    target_size = target_size,
+    batch_size = batch_size,
+    seed = seed)
+
+valid_mask_generator = valid_datagen.flow_from_directory(
+    valid_path + "masks",
+    color_mode='grayscale',
+    class_mode=None,
+    target_size = target_size,
+    batch_size = batch_size,
+    seed = seed)
+
+train_generator = zip(train_image_generator, train_mask_generator)
+train_generator = (pair for pair in train_generator)
+val_generator = zip(valid_image_generator, valid_mask_generator)
+val_generator = (pair for pair in val_generator)
+
+# Arquitetura da UNet e dimensões das imagens de entrada
+IMG_HEIGHT = 480
+IMG_WIDTH = 480
+IMG_CHANNELS = 3
+
+kw = dict(activation='relu', kernel_initializer='he_normal', padding='same')
+
+inputs = Input((IMG_HEIGHT, IMG_WIDTH, IMG_CHANNELS))
+#s = Lambda(lambda x: x / 255)(inputs)
+
+#Contraction path
+c1 = Conv2D(32, (3, 3), **kw)(inputs)
+c1 = Dropout(0.1)(c1)
+c1 = Conv2D(32, (3, 3), **kw)(c1)
+p1 = MaxPooling2D((2, 2))(c1)
+
+c2 = Conv2D(64, (3, 3), **kw)(p1)
+c2 = Dropout(0.1)(c2)
+c2 = Conv2D(64, (3, 3), **kw)(c2)
+p2 = MaxPooling2D((2, 2))(c2)
+ 
+c3 = Conv2D(128, (3, 3), **kw)(p2)
+c3 = Dropout(0.2)(c3)
+c3 = Conv2D(128, (3, 3), **kw)(c3)
+p3 = MaxPooling2D((2, 2))(c3)
+ 
+c4 = Conv2D(256, (3, 3), **kw)(p3)
+c4 = Dropout(0.2)(c4)
+c4 = Conv2D(256, (3, 3), **kw)(c4)
+p4 = MaxPooling2D(pool_size=(2, 2))(c4)
+ 
+c5 = Conv2D(512, (3, 3), **kw)(p4)
+c5 = Dropout(0.3)(c5)
+c5 = Conv2D(512, (3, 3), **kw)(c5)
+
+kw_conv2transp = dict(strides=(2, 2), padding='same')
+u6 = Conv2DTranspose(256, (2, 2), **kw_conv2transp)(c5)
+u6 = concatenate([u6, c4])
+c6 = Conv2D(256, (3, 3), **kw)(u6)
+c6 = Dropout(0.2)(c6)
+c6 = Conv2D(256, (3, 3), **kw)(c6)
+ 
+u7 = Conv2DTranspose(64, (2, 2), **kw_conv2transp)(c6)
+u7 = concatenate([u7, c3])
+c7 = Conv2D(128, (3, 3), **kw)(u7)
+c7 = Dropout(0.2)(c7)
+c7 = Conv2D(128, (3, 3), **kw)(c7)
+ 
+u8 = Conv2DTranspose(128, (2, 2), **kw_conv2transp)(c7)
+u8 = concatenate([u8, c2])
+c8 = Conv2D(64, (3, 3), **kw)(u8)
+c8 = Dropout(0.1)(c8)
+c8 = Conv2D(64, (3, 3), **kw)(c8)
+ 
+u9 = Conv2DTranspose(64, (2, 2), **kw_conv2transp)(c8)
+u9 = concatenate([u9, c1], axis=3)
+c9 = Conv2D(64, (3, 3), **kw)(u9)
+c9 = Dropout(0.1)(c9)
+c9 = Conv2D(64, (3, 3), **kw)(c9)
+
+outputs = Conv2D(1, (1, 1), activation='sigmoid')(c9)
+ 
+model = Model(inputs=[inputs], outputs=[outputs])
+model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
+model.summary()
+
+# Monitoramento da UNet, armazenamento da UNet e execução da UNet:
+callbacks = [ModelCheckpoint(training_path + 'model_for_nematodes_480_cl2.h5', verbose=1, save_best_only=True),
+             EarlyStopping(patience=3, monitor='val_loss'),
+             ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=2, min_lr=1e-6)]
+             
+ STEP_SIZE=500
+ 
+ results = model.fit_generator(generator = train_generator, 
+                              #class_weight=weight_dict,
+                              validation_data = val_generator, 
+                              steps_per_epoch = STEP_SIZE,
+                              validation_steps = STEP_SIZE,
+                              epochs=50, 
+                              use_multiprocessing=True,
+                              callbacks=callbacks, 
+                              verbose= 1)
+
+
+# checando a eficiência de predição do modelo obtido para segmentar estruturas de nematoides em imagens 
+model.load_weights("/content/drive/MyDrive/nema_colored/training/model_for_nematodes_480_cl2.h5")
+
+img = imread('/content/drive/MyDrive/nema_colored/teste/val_1.jpg')
+img = transform.resize(img, (480, 480))
+im_pred = np.expand_dims(img, axis=0)
+
+plt.imshow(img)
+
+mask = model.predict(im_pred)
+mask[mask < .1] = 0
+plt.imshow(mask[0, :,:,0], cmap = "gray")
