@@ -1,0 +1,75 @@
+# caso o pacote skan não esteja instalado, é necessário realizar a instalação
+!pip install skan
+
+# carregando os pacotes necessários
+from skimage.io import imread
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+from skimage.measure import label, regionprops
+import pandas as pd
+from skimage.morphology import skeletonize, medial_axis, closing, square 
+from skimage.filters import threshold_otsu
+from skan import skeleton_to_csgraph, Skeleton, summarize
+
+# ajustando parâmetros necessários
+plt.rcParams["figure.figsize"] = (10, 10)
+
+# Função de pre-processamento para exclusão de pequenas regiões e criação de imagem binária 
+def preprocess(im):
+    im = im[:,:,0]
+    thresh = threshold_otsu(im)
+    bw = closing(im > thresh, square(6))
+    return bw
+
+# funções para exclusão de pequenas regiões e medidas sob a imagem: 
+def erase_small_region(image, labels, min_area = 160):  #min_Area= como definir 
+    for region in regionprops(labels):
+        if region.area < min_area:
+            for coord in region.coords:
+                image[coord[0], coord[1]] = 0 
+    return image    
+
+def calculate_width(image):
+    _, distance = medial_axis(image, return_distance=True)
+    max_width = max(distance[image > 0]) * 2
+    return(max_width)
+
+def show_nematoides(im, labels):
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.imshow(im, cmap = "gray")
+    for count, region in enumerate(regionprops(labels)):  
+        minr, minc, maxr, maxc = region.bbox
+        rect = mpatches.Rectangle((minc, minr), maxc - minc, maxr - minr,
+                                  fill=False, edgecolor='red', linewidth=2)
+        ax.text(region.centroid[1], region.centroid[0], count, color = "red", 
+                size = "xx-large", weight = "bold")
+        ax.add_patch(rect)
+
+def measure_nematoides(im, min_area = 160, show_image = False):
+    label_im = label(im)
+    im = erase_small_region(im, label_im, min_area = min_area) 
+    # Redoing the labels to ignore small areas
+    label_im = label(im)
+    results = []
+    for count, region in enumerate(regionprops(label_im)):
+        skel = skeletonize(region.image) #o que é esse image 
+        Skel = Skeleton(skel)
+        result = {"id":count,
+                  "width":calculate_width(region.image),
+                  "npaths":Skel.n_paths,
+                  "length":Skel.path_lengths()[0],
+                  "fatness":float(region.area)/Skel.path_lengths()[0]}
+        results.append(result)
+    data = pd.DataFrame(results)
+    if show_image:
+        show_nematoides(im, label_im)
+    print(f"Found {len(data)} nematoides in the image!")
+    if any(data.npaths > 1):
+        print("Some branching were detected. The total number of nematoides might be underestimated")
+    return data
+    
+    # exemplo de uso 
+    data = measure_nematoides(im = im, min_area = 160, show_image=True)
+    
+    # ao chamar o código abaixo, é disponibilizada um data.frame com as medidas
+    data 
