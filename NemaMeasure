@@ -22,7 +22,7 @@ def preprocess(im):
     return bw
 
 # funções para exclusão de pequenas regiões e medidas sob a imagem: 
-def erase_small_region(image, labels, min_area = 160):  #min_Area= como definir 
+def erase_small_region(image, labels, min_area = 160): 
     for region in regionprops(labels):
         if region.area < min_area:
             for coord in region.coords:
